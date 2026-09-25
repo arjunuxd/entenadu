@@ -1,0 +1,42 @@
+{
+  "name": "ente-nadu-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "seed": "tsx src/seeds/seed.ts",
+    "seed:admin": "tsx src/seeds/seedAdmin.ts",
+    "seed:users": "tsx src/seeds/seedUsers.ts",
+    "verify:seed": "tsx scripts/verifySeed.mts",
+    "verify:auth": "tsx scripts/verifyAuth.mts",
+    "verify:bot": "tsx scripts/verifyBot.mts",
+    "verify:admin": "tsx scripts/verifyAdmin.mts",
+    "verify:authority": "tsx scripts/verifyAuthority.mts",
+    "verify:phase6": "tsx scripts/verifyPhase6.mts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.11.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.7.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^8.9.5",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^22.7.5",
+    "mongodb-memory-server": "^11.3.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
