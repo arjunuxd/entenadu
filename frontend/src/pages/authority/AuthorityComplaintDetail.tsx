@@ -181,7 +181,8 @@ export default function AuthorityComplaintDetail() {
             <div>
               <span className="label">Location</span>
               <span>
-                {complaint.location ? `${complaint.location.latitude.toFixed(5)}, ${complaint.location.longitude.toFixed(5)}` : '—'}
+                {complaint.locationLabel ??
+                  (complaint.location ? `${complaint.location.latitude.toFixed(5)}, ${complaint.location.longitude.toFixed(5)}` : '—')}
               </span>
             </div>
             <div>

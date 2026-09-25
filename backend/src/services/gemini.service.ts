@@ -17,18 +17,8 @@ export interface GeminiTextAnalysis {
   description: string | null
   district: string | null
   place: string | null
+  location: string | null
   missingInformation: string[]
-}
-
-export interface GeminiPhotoAnalysis {
-  observations: string[]
-  category: ComplaintCategory | null
-  severity: ComplaintSeverity | null
-}
-
-export interface PhotoInput {
-  mimeType: string
-  dataBase64: string
 }
 
 const TEXT_SYSTEM_PROMPT = `You are the Ente Nadu citizen-reporting assistant. You help structure a complaint a citizen is typing on Telegram.
@@ -41,20 +31,16 @@ For the citizen's message, classify its textType as one of:
 - "unknown": you cannot tell.
 
 Return JSON exactly in this shape:
-{"textType":"description|location|unknown","language":"English | Malayalam | Manglish | other | null","category":"one of the categories or null","severity":"Low|Medium|High|Critical or null","description":"Short, plain, factual summary of the problem, or null","district":"Kerala district if determinable, else null","place":"Place/area name mentioned, else null","missingInformation":["location","photo","nothing","more_detail"]}
+{"textType":"description|location|unknown","language":"English | Malayalam | Manglish | other | null","category":"one of the categories or null","severity":"Low|Medium|High|Critical or null","description":"Short, plain, factual summary of the problem, or null","district":"Kerala district if determinable, else null","place":"Place/area name mentioned (for example 'Kunnamthanam'), else null","location":"Specific place/area/road detail mentioned (for example 'Kunnamthanam Road'), else null","missingInformation":["location","photo","nothing","more_detail"]}
 
 Rules:
 - Keep the original citizen description intact in your summary meaning; never invent facts.
+- "district" and "place" and "location" must come from the citizen's own words. Never guess.
+- NEVER return an authority, local body, municipality, panchayat, or official name. Authorities are decided by the government system, not by you.
 - If the text is part of an ongoing conversation and only fills in missing details, still return the same JSON shape.
 - Respond with JSON only, no markdown, no explanations.`
 
-const PHOTO_SYSTEM_PROMPT = `You are the Ente Nadu citizen-reporting assistant analyzing a photo attached to a complaint on Telegram.
-Categories (use exactly one, or null if unclear): ${COMPLAINT_CATEGORIES.join(' | ')}
-Severities (use exactly one, or null if unclear): ${COMPLAINT_SEVERITIES.join(' | ')}
-
-Return JSON exactly in this shape:
-{"observations":["short factual observation about what the photo shows"],"category":"one of the categories or null","severity":"Low|Medium|High|Critical or null"}
-Respond with JSON only. If nothing can be determined, return {"observations":[],"category":null,"severity":null}.`
+const CURRENT_GEMINI_MODELS = ['gemini-3.8-flash'] as const
 
 const EMPTY_TEXT_ANALYSIS: GeminiTextAnalysis = {
   inputType: 'unknown',
@@ -64,13 +50,8 @@ const EMPTY_TEXT_ANALYSIS: GeminiTextAnalysis = {
   description: null,
   district: null,
   place: null,
+  location: null,
   missingInformation: [],
-}
-
-const EMPTY_PHOTO_ANALYSIS: GeminiPhotoAnalysis = {
-  observations: [],
-  category: null,
-  severity: null,
 }
 
 function stripCodeFences(raw: string): string {
@@ -122,80 +103,108 @@ function normalizeTextAnalysis(value: unknown): GeminiTextAnalysis {
     description: asNullableString(data.description),
     district: asNullableString(data.district),
     place: asNullableString(data.place),
+    location: asNullableString(data.location),
     missingInformation: asStringArray(data.missingInformation),
   }
 }
 
-function normalizePhotoAnalysis(value: unknown): GeminiPhotoAnalysis {
-  if (value === null || typeof value !== 'object') {
-    return EMPTY_PHOTO_ANALYSIS
-  }
-
-  const data = value as Record<string, unknown>
-
-  return {
-    observations: asStringArray(data.observations),
-    category: isCategory(data.category) ? data.category : null,
-    severity: isSeverity(data.severity) ? data.severity : null,
-  }
-}
-
-interface GeminiMultipartPart {
-  text: string
-  inlineData?: never
-}
-
-interface GeminiImagePart {
-  text?: never
-  inlineData: { mimeType: string; data: string }
-}
-
 interface GeminiJsonInput {
   systemInstruction: { parts: { text: string }[] }
-  contents: { parts: (GeminiMultipartPart | GeminiImagePart)[] }[]
+  contents: { parts: { text: string }[] }[]
   generationConfig: {
     temperature: number
     responseMimeType: 'application/json'
   }
 }
 
-async function generateJson(systemPrompt: string, userParts: (GeminiMultipartPart | GeminiImagePart)[]): Promise<unknown> {
+const MAX_RETRIES = 3
+const RETRY_DELAYS_MS = [1000, 2000, 4000]
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function retryDelayMs(retry: number): number {
+  const base = RETRY_DELAYS_MS[retry - 1] ?? 1000
+  return base + Math.floor(Math.random() * 250)
+}
+
+function isTransientStatus(status: number): boolean {
+  return status === 503 || status === 429
+}
+
+async function generateJson(systemPrompt: string, text: string): Promise<unknown> {
   if (!env.geminiApiKey) {
     throw new Error('GEMINI_API_KEY is not set')
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.geminiModel)}:generateContent?key=${encodeURIComponent(env.geminiApiKey)}`
-
   const payload: GeminiJsonInput = {
     systemInstruction: { parts: [{ text: systemPrompt }] },
-    contents: [{ parts: userParts }],
+    contents: [{ parts: [{ text }] }],
     generationConfig: {
       temperature: 0.2,
       responseMimeType: 'application/json',
     },
   }
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(25_000),
-  })
+  const models = [env.geminiModel, ...CURRENT_GEMINI_MODELS.filter((model) => model !== env.geminiModel)]
 
-  if (!response.ok) {
-    throw new Error(`Gemini API error: HTTP ${response.status}`)
+  let lastStatus: number | null = null
+
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
+
+    let attempt = 0
+
+    while (true) {
+      attempt += 1
+
+      let response: Response
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': env.geminiApiKey,
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(25_000),
+        })
+      } catch (error) {
+        throw new Error(`Gemini API request failed: ${error instanceof Error ? error.message : 'unknown error'}`)
+      }
+
+      if (response.ok) {
+        const data = (await response.json()) as {
+          candidates?: { content?: { parts?: { text?: string }[] } }[]
+        }
+
+        const resultText =
+          data.candidates?.[0]?.content?.parts
+            ?.map((part) => part.text ?? '')
+            .join('') ?? ''
+
+        return safeParseJson(resultText)
+      }
+
+      const status = response.status
+
+      if (status === 404) {
+        lastStatus = status
+        break
+      }
+
+      if (isTransientStatus(status) && attempt <= MAX_RETRIES) {
+        lastStatus = status
+        await sleep(retryDelayMs(attempt))
+        continue
+      }
+
+      throw new Error(`Gemini API error: HTTP ${status}`)
+    }
   }
 
-  const data = (await response.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[]
-  }
-
-  const text =
-    data.candidates?.[0]?.content?.parts
-      ?.map((part) => part.text ?? '')
-      .join('') ?? ''
-
-  return safeParseJson(text)
+  throw new Error(`Gemini API error: HTTP ${lastStatus ?? 'unknown'}`)
 }
 
 export async function understandText(text: string, _context: TextInputContext): Promise<GeminiTextAnalysis> {
@@ -210,31 +219,10 @@ export async function understandText(text: string, _context: TextInputContext): 
   }
 
   try {
-    const raw = await generateJson(TEXT_SYSTEM_PROMPT, [{ text: cleaned }])
+    const raw = await generateJson(TEXT_SYSTEM_PROMPT, cleaned)
     return normalizeTextAnalysis(raw)
   } catch (error) {
     console.warn(`[gemini] understandText failed: ${error instanceof Error ? error.message : 'unknown error'}`)
     return EMPTY_TEXT_ANALYSIS
-  }
-}
-
-export async function analyzePhoto(image: PhotoInput): Promise<GeminiPhotoAnalysis> {
-  if (!env.geminiApiKey) {
-    return EMPTY_PHOTO_ANALYSIS
-  }
-
-  try {
-    const raw = await generateJson(PHOTO_SYSTEM_PROMPT, [
-      {
-        text: 'Analyze the following photo attached by a citizen:',
-      },
-      {
-        inlineData: { mimeType: image.mimeType, data: image.dataBase64 },
-      },
-    ])
-    return normalizePhotoAnalysis(raw)
-  } catch (error) {
-    console.warn(`[gemini] analyzePhoto failed: ${error instanceof Error ? error.message : 'unknown error'}`)
-    return EMPTY_PHOTO_ANALYSIS
   }
 }

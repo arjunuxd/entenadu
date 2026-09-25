@@ -42,6 +42,7 @@ export interface CreateComplaintInput {
   severity: ComplaintSeverity | null
   photoUrl: string | null
   district: string | null
+  locationLabel: string | null
   placeId: Types.ObjectId | null
   latitude: number | null
   longitude: number | null
@@ -76,6 +77,7 @@ export async function createComplaint(input: CreateComplaintInput): Promise<Comp
     severity: input.severity,
     photoUrl: input.photoUrl,
     district: input.district,
+    locationLabel: input.locationLabel,
     placeId: input.placeId,
     latitude: input.latitude,
     longitude: input.longitude,
@@ -151,6 +153,7 @@ export interface ComplaintView {
   severity: ComplaintSeverity | null
   photoUrl: string | null
   district: string | null
+  locationLabel: string | null
   place: ComplaintPlaceView | null
   location: { latitude: number; longitude: number } | null
   authority: ComplaintAuthorityView | null
@@ -216,6 +219,7 @@ interface ComplaintRow {
   severity: ComplaintSeverity | null
   photoUrl: string | null
   district: string | null
+  locationLabel: string | null
   placeId: { _id: unknown; name: string; district: string } | null
   latitude: number | null
   longitude: number | null
@@ -265,6 +269,7 @@ function buildComplaintView(row: ComplaintRow): ComplaintView {
     severity: row.severity,
     photoUrl: row.photoUrl,
     district: row.district,
+    locationLabel: row.locationLabel ?? null,
     place: row.placeId ? { id: String(row.placeId._id), name: row.placeId.name, district: row.placeId.district } : null,
     location,
     authority: row.authorityId

@@ -62,6 +62,7 @@ export interface ComplaintView {
   severity: string | null
   photoUrl: string | null
   district: string | null
+  locationLabel: string | null
   place: ComplaintPlace | null
   location: ComplaintLocation | null
   authority: ComplaintAuthority | null

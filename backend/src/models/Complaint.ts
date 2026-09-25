@@ -36,6 +36,7 @@ export interface Complaint {
   severity: ComplaintSeverity | null
   photoUrl: string | null
   district: string | null
+  locationLabel: string | null
   placeId: Types.ObjectId | null
   latitude: number | null
   longitude: number | null
@@ -56,6 +57,7 @@ const complaintSchema = new Schema<Complaint>(
     severity: { type: String, enum: COMPLAINT_SEVERITIES, default: null },
     photoUrl: { type: String, default: null },
     district: { type: String, trim: true, default: null },
+    locationLabel: { type: String, trim: true, default: null },
     placeId: { type: Schema.Types.ObjectId, ref: 'Place', default: null },
     latitude: { type: Number, default: null },
     longitude: { type: Number, default: null },

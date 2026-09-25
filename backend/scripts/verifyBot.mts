@@ -15,7 +15,7 @@ import {
   type BotContext,
   type ComplaintBotDeps,
 } from '../src/services/telegram/handlers.js'
-import type { GeminiPhotoAnalysis, GeminiTextAnalysis } from '../src/services/gemini.service.js'
+import type { GeminiTextAnalysis } from '../src/services/gemini.service.js'
 import { COMPLAINT_ID_PATTERN } from '../src/utils/complaintId.js'
 
 let failures = 0
@@ -86,6 +86,7 @@ function understandTextFake(text: string): GeminiTextAnalysis {
       description: `A problem is reported near ${place.place}.`,
       district,
       place: place.place,
+      location: lower.includes('road') ? `near ${place.place} road` : null,
       missingInformation: ['photo'],
     }
   }
@@ -99,6 +100,7 @@ function understandTextFake(text: string): GeminiTextAnalysis {
       description: 'A pothole near the school.',
       district: null,
       place: null,
+      location: null,
       missingInformation: ['location'],
     }
   }
@@ -112,6 +114,7 @@ function understandTextFake(text: string): GeminiTextAnalysis {
       description: 'A large pothole is reported.',
       district: null,
       place: null,
+      location: null,
       missingInformation: ['location'],
     }
   }
@@ -125,6 +128,7 @@ function understandTextFake(text: string): GeminiTextAnalysis {
       description: null,
       district,
       place: place.place,
+      location: null,
       missingInformation: [],
     }
   }
@@ -138,6 +142,7 @@ function understandTextFake(text: string): GeminiTextAnalysis {
       description: 'A large pothole is reported near the school.',
       district: null,
       place: null,
+      location: null,
       missingInformation: ['location'],
     }
   }
@@ -150,6 +155,7 @@ function understandTextFake(text: string): GeminiTextAnalysis {
     description: 'A general issue is reported.',
     district: null,
     place: null,
+    location: null,
     missingInformation: ['location'],
   }
 }
@@ -187,8 +193,6 @@ function makeDeps(
       }
       return understandTextFake(text)
     },
-    analyzePhoto: async () =>
-      ({ observations: ['Pothole visible near the road edge'], category: null, severity: null }) as GeminiPhotoAnalysis,
   }
 }
 
@@ -255,6 +259,13 @@ const sendCb = (handlers: ReturnType<typeof createComplaintHandlers>, user: Fake
 const sendPhoto = (handlers: ReturnType<typeof createComplaintHandlers>, user: FakeUser, fileId: string): Promise<void> =>
   handlers.photo({ ...user.ctx, photo: [{ fileId }] })
 
+const sendPhotoWithCaption = (
+  handlers: ReturnType<typeof createComplaintHandlers>,
+  user: FakeUser,
+  fileId: string,
+  caption: string,
+): Promise<void> => handlers.photo({ ...user.ctx, photo: [{ fileId }], caption })
+
 const sendLocation = (
   handlers: ReturnType<typeof createComplaintHandlers>,
   user: FakeUser,
@@ -309,6 +320,7 @@ console.log('=== Scenario A: English full flow → Thiruvalla → preview/confir
       complaintA.authorityId?.toString() === tvlaMun._id.toString(),
   )
   check('A13 AI-derived category/severity/language/district accepted', complaintA !== null && complaintA.category === 'Road Infrastructure' && complaintA.severity === 'High' && complaintA.language === 'English' && complaintA.district === 'Pathanamthitta')
+  check('A13b location label persisted (falls back to resolved place)', complaintA !== null && complaintA.locationLabel === 'Thiruvalla', String(complaintA?.locationLabel))
   check('A14 complaint starts as submitted', complaintA !== null && complaintA.status === 'submitted')
 
   const historyA = await ComplaintHistory.findOne({ complaintId: complaintA?._id }).lean()
@@ -400,6 +412,42 @@ console.log('\n=== Scenario F: invalid photo is rejected gracefully ===\n')
   const fComplaint = await Complaint.findOne({}).sort({ createdAt: -1 }).lean()
   check('F2 complaint still created without photo', fComplaint !== null && fComplaint.photoUrl === null)
   check('F3 no extra Cloudinary upload happened', uploadState.uploadCount === 1, `uploads=${uploadState.uploadCount}`)
+}
+
+console.log('\n=== Scenario F2: photo + caption → caption to Gemini, photo only to Cloudinary ===\n')
+
+{
+  const user = makeUser()
+  await startAndReport(handlersA, user)
+  const before = uploadState.uploadCount
+  await sendPhotoWithCaption(handlersA, user, 'photo_cap', 'Pothole near Kunnamthanam school')
+  check(
+    'F2-1 caption structured text, photo not analyzed (no crash, preview reached)',
+    replyContains(user, 'Complaint preview'),
+  )
+  await sendCb(handlersA, user, 'confirm')
+  const capComplaint = await Complaint.findOne({}).sort({ createdAt: -1 }).lean()
+  check(
+    'F2-2 complaint carries Cloudinary photo URL from caption flow',
+    capComplaint !== null && capComplaint.photoUrl !== null && capComplaint.photoUrl.includes('cloudinary.test'),
+  )
+  check(
+    'F2-3 structured fields persisted from caption text',
+    capComplaint !== null &&
+      capComplaint.category === 'Road Infrastructure' &&
+      capComplaint.language === 'English' &&
+      capComplaint.district === 'Pathanamthitta' &&
+      capComplaint.locationLabel === 'Kunnamthanam',
+  )
+  const kunnPlace = await Place.findOne({ name: 'Kunnamthanam', district: 'Pathanamthitta' }).lean()
+  check(
+    'F2-4 caption location resolves via DB place → authority',
+    capComplaint !== null &&
+      kunnPlace !== null &&
+      capComplaint.placeId?.toString() === kunnPlace._id.toString() &&
+      (await ComplaintSession.findOne({ telegramUserId: user.ctx.telegramUserId }).lean())?.complaintCreated === true,
+  )
+  check('F2-5 exactly one Cloudinary upload for the photo', uploadState.uploadCount === before + 1, `uploads=${uploadState.uploadCount}`)
 }
 
 console.log('\n=== Scenario G: ambiguous place name is clarified ===\n')
@@ -605,7 +653,7 @@ console.log('\n=== Scenario P: locations across all demo areas resolve ===\n')
   check('P all 10 demo areas resolve to their authority', allMapped)
 
   const totalAfterMappings = await Complaint.countDocuments()
-  check('P complaint count matches every confirmed flow', totalAfterMappings === 11, `${totalAfterMappings} vs 11`)
+  check('P complaint count matches every confirmed flow', totalAfterMappings === 12, `${totalAfterMappings} vs 12`)
 }
 
 console.log('\n========================================')

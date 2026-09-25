@@ -1,6 +1,6 @@
 import { Markup, Telegraf, type Context } from 'telegraf'
 import { env } from '../../config/env.js'
-import { analyzePhoto, understandText } from '../gemini.service.js'
+import { understandText } from '../gemini.service.js'
 import { uploadPhoto } from '../cloudinary.service.js'
 import { registerTelegramNotifier } from '../notification.service.js'
 import { createComplaintHandlers, type BotContext } from './handlers.js'
@@ -31,7 +31,6 @@ export async function startTelegramBot(): Promise<StopTelegramBot | null> {
     },
     uploadPhoto,
     understandText,
-    analyzePhoto,
   })
 
   function toBotContext(ctx: Context, callbackData?: string): BotContext {

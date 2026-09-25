@@ -1,7 +1,10 @@
+import dns from 'node:dns'
 import mongoose from 'mongoose'
 import { env } from './env.js'
 
-const SERVER_SELECTION_TIMEOUT_MS = 10000
+const SERVER_SELECTION_TIMEOUT_MS = 15000
+const MAX_CONNECT_ATTEMPTS = 3
+const PUBLIC_DNS_SERVERS = ['8.8.8.8', '1.1.1.1']
 
 export async function connectDatabase(): Promise<void> {
   if (!env.mongoUri) {
@@ -13,13 +16,21 @@ export async function connectDatabase(): Promise<void> {
     console.error('MongoDB connection error:', err instanceof Error ? err.message : err)
   })
 
-  try {
-    await mongoose.connect(env.mongoUri, {
-      serverSelectionTimeoutMS: SERVER_SELECTION_TIMEOUT_MS,
-    })
-    console.log(`MongoDB connected (database: ${mongoose.connection.name})`)
-  } catch (err) {
-    console.error('Failed to connect to MongoDB:', err instanceof Error ? err.message : err)
+  for (let attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt++) {
+    try {
+      await mongoose.connect(env.mongoUri, {
+        serverSelectionTimeoutMS: SERVER_SELECTION_TIMEOUT_MS,
+      })
+      console.log(`MongoDB connected (database: ${mongoose.connection.name})`)
+      return
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`MongoDB connect attempt ${attempt}/${MAX_CONNECT_ATTEMPTS} failed: ${message}`)
+      if (attempt === 1) {
+        dns.setServers(PUBLIC_DNS_SERVERS)
+        console.log('Switching Node DNS to public resolvers and retrying...')
+      }
+    }
   }
 }
 

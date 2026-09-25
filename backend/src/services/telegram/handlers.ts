@@ -8,7 +8,7 @@ import { createComplaint, getComplaintByCitizen, listComplaintsByCitizen } from 
 import { getPlaceView, resolvePlace } from '../place.service.js'
 import { validatePhoto } from '../../utils/photoValidation.js'
 import { COMPLAINT_STATUS_LABELS } from '../../utils/statusLabels.js'
-import type { GeminiPhotoAnalysis, GeminiTextAnalysis, PhotoInput, TextInputContext } from '../gemini.service.js'
+import type { GeminiTextAnalysis, TextInputContext } from '../gemini.service.js'
 
 export interface BotButton {
   text: string
@@ -36,7 +36,6 @@ export interface ComplaintBotDeps {
   downloadPhoto(fileId: string): Promise<PhotoDownloadResult>
   uploadPhoto(buffer: Buffer, contentType: string): Promise<string>
   understandText(text: string, context: TextInputContext): Promise<GeminiTextAnalysis>
-  analyzePhoto(image: PhotoInput): Promise<GeminiPhotoAnalysis>
 }
 
 export interface ComplaintHandlers {
@@ -260,7 +259,7 @@ export function createComplaintHandlers(deps: ComplaintBotDeps): ComplaintHandle
     const caption = ctx.caption?.trim()
 
     if (caption) {
-      await text({ ...ctx, text: caption })
+      await text({ ...ctx, text: caption, caption: undefined, photo: undefined })
       return
     }
 
@@ -331,7 +330,7 @@ export function createComplaintHandlers(deps: ComplaintBotDeps): ComplaintHandle
       await applyDescription(session, textInput, analysis)
 
       if (analysis.place && !hasLocation(session)) {
-        await applyLocationText(session, analysis.place, analysis, ctx)
+        await applyLocationText(session, analysis.location ?? analysis.place, analysis, ctx)
       }
     }
 
@@ -367,31 +366,12 @@ export function createComplaintHandlers(deps: ComplaintBotDeps): ComplaintHandle
               : 'The photo appears to be empty.'
         await ctx.reply(`${reason} You can continue without a photo.`)
       } else {
-        const [photoUrl, photoAnalysis] = await Promise.all([
-          deps.uploadPhoto(buffer, validation.mimeType).catch((error: unknown) => {
-            console.warn(`[bot] photo upload skipped: ${error instanceof Error ? error.message : 'unknown error'}`)
-            return null
-          }),
-          deps
-            .analyzePhoto({ mimeType: validation.mimeType, dataBase64: buffer.toString('base64') })
-            .catch(() => ({
-              observations: [] as string[],
-              category: null,
-              severity: null,
-            })),
-        ])
+        const photoUrl = await deps.uploadPhoto(buffer, validation.mimeType).catch((error: unknown) => {
+          console.warn(`[bot] photo upload skipped: ${error instanceof Error ? error.message : 'unknown error'}`)
+          return null
+        })
 
         session.photoUrl = photoUrl
-
-        if (photoAnalysis.observations.length > 0) {
-          session.imageObservations = photoAnalysis.observations
-        }
-        if (session.category === null && photoAnalysis.category) {
-          session.category = photoAnalysis.category
-        }
-        if (session.severity === null && photoAnalysis.severity) {
-          session.severity = photoAnalysis.severity
-        }
 
         if (photoUrl) {
           await ctx.reply('Thanks! I have saved the photo.')
@@ -406,7 +386,7 @@ export function createComplaintHandlers(deps: ComplaintBotDeps): ComplaintHandle
     await session.save()
 
     if (ctx.caption?.trim()) {
-      await text({ ...ctx, text: ctx.caption })
+      await text({ ...ctx, text: ctx.caption, caption: undefined, photo: undefined })
       return
     }
 
@@ -472,6 +452,7 @@ export function createComplaintHandlers(deps: ComplaintBotDeps): ComplaintHandle
       severity: session.severity,
       photoUrl: session.photoUrl,
       district: session.district,
+      locationLabel: session.manualLocation,
       placeId: session.placeId,
       latitude: session.latitude,
       longitude: session.longitude,
